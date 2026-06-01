@@ -1,0 +1,90 @@
+name: CD — Deploy a AWS Glue
+
+on:
+  workflow_dispatch:  # Trigger manual (activar push a main cuando esté validado)
+  # push:
+  #   branches: [main]
+  #   paths: ['src/**/*.py']
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  S3_SCRIPTS_BUCKET: ${{ vars.S3_SCRIPTS_BUCKET }}
+  S3_SCRIPTS_PREFIX: glue-scripts/
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - file: src/job1_staging.py
+            glue_job: job1_incremental_staging
+
+          - file: src/job2_historia_real.py
+            glue_job: job2_historia_real
+
+          - file: src/job3_imputacion.py
+            glue_job: job3_imputacion_jerarquia
+
+          - file: src/job4_analitica.py
+            glue_job: job4_capa_analitica
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detectar cambios
+        id: changes
+        run: |
+          if git diff --name-only HEAD~1 HEAD | grep -q "^${{ matrix.file }}$"; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Autenticación AWS (OIDC)
+        if: steps.changes.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Subir script a S3
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          aws s3 cp "${{ matrix.file }}" \
+            "s3://${{ env.S3_SCRIPTS_BUCKET }}/${{ env.S3_SCRIPTS_PREFIX }}${{ matrix.glue_job }}.py"
+
+      - name: Actualizar job en Glue (preservando parámetros)
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          SCRIPT="s3://${{ env.S3_SCRIPTS_BUCKET }}/${{ env.S3_SCRIPTS_PREFIX }}${{ matrix.glue_job }}.py"
+          JOB_NAME="${{ matrix.glue_job }}"
+
+          # Obtener configuración actual
+          CURRENT=$(aws glue get-job --job-name "${JOB_NAME}" --query 'Job')
+          ROLE=$(echo "${CURRENT}" | jq -r '.Role')
+          ARGS=$(echo "${CURRENT}" | jq -c '.DefaultArguments // {}')
+          VERSION=$(echo "${CURRENT}" | jq -r '.GlueVersion // "4.0"')
+          WORKERS=$(echo "${CURRENT}" | jq -r '.NumberOfWorkers // 2')
+          WORKER_TYPE=$(echo "${CURRENT}" | jq -r '.WorkerType // "G.1X"')
+
+          # Actualizar solo el script, preservar todo lo demás
+          aws glue update-job \
+            --job-name "${JOB_NAME}" \
+            --job-update "{
+              \"Role\": \"${ROLE}\",
+              \"Command\": {\"ScriptLocation\": \"${SCRIPT}\", \"Name\": \"glueetl\", \"PythonVersion\": \"3\"},
+              \"DefaultArguments\": ${ARGS},
+              \"GlueVersion\": \"${VERSION}\",
+              \"WorkerType\": \"${WORKER_TYPE}\",
+              \"NumberOfWorkers\": ${WORKERS}
+            }"
+
+          echo "✓ Deploy: ${JOB_NAME}"

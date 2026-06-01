@@ -1,0 +1,119 @@
+{
+  "Comment": "Orquestación diaria del pipeline de métricas de riesgo",
+  "QueryLanguage": "JSONata",
+  "StartAt": "ValidarDiaHabil",
+  "States": {
+    "ValidarDiaHabil": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Output": "{% $states.result.Payload %}",
+      "Arguments": {
+        "FunctionName": "${LambdaBusinessDayCheckArn}",
+        "Payload": "{% $states.input %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "EsDiaHabil",
+      "Assign": {
+        "CORTE": "{% $states.result.Payload.fecha %}"
+      }
+    },
+
+    "EsDiaHabil": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Next": "Job1Staging",
+          "Condition": "{% $states.input.es_habil %}"
+        }
+      ],
+      "Default": "Exito"
+    },
+
+    "Job1Staging": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "${GlueJob1Name}"
+      },
+      "Next": "Job2HistoriaReal",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "Job2HistoriaReal",
+          "Comment": "Job 1 puede fallar si no hay datos nuevos — continuar"
+        }
+      ]
+    },
+
+    "Job2HistoriaReal": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "${GlueJob2Name}",
+        "Arguments": {
+          "--FECHA_PROCESO": "{% $CORTE %}"
+        }
+      },
+      "Next": "Job3Imputacion"
+    },
+
+    "Job3Imputacion": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "${GlueJob3Name}",
+        "Arguments": {
+          "--FECHA_PROCESO": "{% $CORTE %}"
+        }
+      },
+      "Next": "Job4Analitica"
+    },
+
+    "Job4Analitica": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "${GlueJob4Name}",
+        "Arguments": {
+          "--FECHA_PROCESO": "{% $CORTE %}"
+        }
+      },
+      "Next": "ValidarRedshift"
+    },
+
+    "ValidarRedshift": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:redshiftdata:executeStatement",
+      "Arguments": {
+        "ClusterIdentifier": "${RedshiftClusterId}",
+        "Database": "${RedshiftDatabase}",
+        "DbUser": "${RedshiftUser}",
+        "Sql": "{% \"SELECT 'te_pesos_base' AS tabla, COUNT(*) AS total FROM analytics.te_pesos_base WHERE corte = '\" & $CORTE & \"' UNION ALL SELECT 'te_exante_resumen', COUNT(*) FROM analytics.te_exante_resumen WHERE corte = '\" & $CORTE & \"';\" %}"
+      },
+      "Next": "EsperarValidacion"
+    },
+
+    "EsperarValidacion": {
+      "Type": "Wait",
+      "Seconds": 60,
+      "Next": "Exito"
+    },
+
+    "Exito": {
+      "Type": "Succeed"
+    },
+
+    "Fallo": {
+      "Type": "Fail",
+      "Error": "PipelineFailed",
+      "Cause": "La validación en Redshift no encontró datos para el corte procesado."
+    }
+  }
+}

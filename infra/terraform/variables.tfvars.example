@@ -1,0 +1,11 @@
+# =====================================================
+# Variables de entorno — Copiar a terraform.tfvars
+# NO commitear terraform.tfvars con valores reales
+# =====================================================
+
+aws_region          = "us-east-1"
+environment         = "prod"
+project_name        = "risk-analytics"
+s3_bucket_name      = "risk-analytics-pipeline"
+redshift_cluster_id = "mi-cluster-redshift"
+source_jdbc_url     = "jdbc:mysql://host:3306/database"
