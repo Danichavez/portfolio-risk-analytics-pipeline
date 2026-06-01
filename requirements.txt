@@ -1,0 +1,17 @@
+# ============================================================
+# Dependencias — Pipeline de Métricas de Riesgo
+# ============================================================
+# NOTA: AWS Glue 4.0 provee PySpark y awsglue en runtime.
+# Estas dependencias son para desarrollo local y testing.
+
+# Desarrollo local
+pyspark==3.3.2
+boto3==1.28.0
+
+# Lint y calidad
+ruff==0.4.4
+
+# Testing
+pytest==7.4.0
+hypothesis==6.82.0
+numpy==1.24.3
